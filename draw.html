@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>DrawTogether - 음성/영상 채팅 (호스트 관리 포함)</title>
+<style>
+  body { background: #121212; color: white; font-family: 'Noto Sans KR', sans-serif; margin: 0; padding: 20px; }
+  h1 { text-align:center; }
+  #videoContainer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    max-width: 960px;
+    margin: 0 auto 20px auto;
+    background: #222;
+    border-radius: 12px;
+    padding: 10px;
+    min-height: 120px;
+  }
+  .userBox {
+    background: #333;
+    padding: 10px;
+    border-radius: 8px;
+    width: 140px;
+    position: relative;
+    color: white;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .userBox.host {
+    border: 2px solid gold;
+  }
+  .userName {
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  video {
+    width: 120px;
+    height: 90px;
+    background: black;
+    border-radius: 6px;
+    object-fit: cover;
+  }
+  .controls {
+    margin-top: 6px;
+    display: flex;
+    gap: 6px;
+  }
+  button.controlBtn {
+    background: #555;
+    border: none;
+    color: white;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  button.controlBtn:hover {
+    background: #00ff7f;
+    color: black;
+  }
+  #localControls {
+    text-align: center;
+  }
+  #localControls button {
+    margin: 5px;
+    padding: 10px 20px;
+    border-radius: 10px;
+    border: none;
+    background: #444;
+    color: white;
+    cursor: pointer;
+  }
+  #localControls button:hover {
+    background: #00ff7f;
+    color: black;
+  }
+  /* 예시 스타일 */
+#chatContainer {
+  position: fixed;
+  bottom: 10px;
+  right: 10px;
+  width: 320px;
+  max-height: 60vh;
+  background: #222;
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+}
+#chatMessages {
+  flex: 1;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  max-height: 300px;
+  color: white;
+}
+#chatControls {
+  display: flex;
+  gap: 6px;
+}
+/* 📱 반응형 대응 */
+@media (max-width: 600px) {
+  #videoContainer {
+    flex-direction: column;
+    align-items: center;
+  }
+  .userBox {
+    width: 90%;
+  }
+  #chatContainer {
+    width: 90%;
+    right: 5%;
+    bottom: 20px;
+  }
+}
+
+</style>
+</head>
+<body>
+
+<h1>DrawTogether 음성/영상 채팅</h1>
+
+<div id="videoContainer">
+  <!-- 사용자별 비디오 박스들 여기에 렌더링 -->
+</div>
+
+<!-- 채팅 UI -->
+<div id="chatContainer">
+  <div id="chatMessages"></div>
+  <div id="chatControls">
+    <input id="chatInput" type="text" placeholder="메시지를 입력하세요" />
+    <button id="sendMessage">전송</button>
+    <button id="toggleMode">💬 텍스트</button>
+  </div>
+</div>
+
+<div id="localControls">
+  <button id="toggleMic">🎤 마이크 켜기</button>
+  <button id="toggleCam">📷 카메라 켜기</button>
+  <button id="shareScreen">🖥️ 화면 공유</button>
+</div>
+<div id="hostControls" style="text-align:center; margin-top:20px; display:none;">
+  <button id="deleteRoomBtn" style="padding:10px 20px; background:red; color:white; border:none; border-radius:8px; cursor:pointer;">
+    🧨 방 없애기
+  </button>
+</div>
+
+<div id="bigScreenContainer" style="position: fixed; bottom: 60px; left: 10px; right: 10px; height: 250px; background: #111; border-radius: 12px; display: flex; justify-content: center; align-items: center; overflow: hidden;">
+  <video id="bigScreenVideo" autoplay playsinline style="max-width: 100%; max-height: 100%; background: black; border-radius: 8px;"></video>
+  <button id="expandBigScreenBtn" style="position: absolute; top: 10px; right: 10px; z-index: 10;">확장</button>
+</div>
+
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyDwTegUMVEfiLymObTxz4Camhtb84RkUtw",
+    authDomain: "draw-f2d10.firebaseapp.com",
+    databaseURL: "https://draw-f2d10-default-rtdb.firebaseio.com",
+    projectId: "draw-f2d10",
+    storageBucket: "draw-f2d10.appspot.com",
+    messagingSenderId: "177556350348",
+    appId: "1:177556350348:web:d8b35cdc76f7b68fa3e2a9"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const roomId = urlParams.get("roomId");
+  if (!roomId) {
+    alert("방 ID가 없습니다.");
+    location.href = "index.html";
+  }
+
+  let localUid = null;
+  let localStream = null;
+  let micOn = false;
+  let camOn = false;
+  let sharingScreen = false;
+  let userName = "";
+
+  const videoContainer = document.getElementById("videoContainer");
+  const btnMic = document.getElementById("toggleMic");
+  const btnCam = document.getElementById("toggleCam");
+  const btnScreen = document.getElementById("shareScreen");
+
+const isHost = urlParams.get("host") === "true"; // URL에서 host=true 인 경우 호스트로 간주
+
+
+const bigScreenContainer = document.getElementById("bigScreenContainer");
+const bigScreenVideo = document.getElementById("bigScreenVideo");
+const expandBtn = document.getElementById("expandBigScreenBtn");
+
+expandBtn.onclick = () => {
+  if (!document.fullscreenElement) {
+    bigScreenContainer.requestFullscreen();
+  } else {
+    document.exitFullscreen();
+  }
+};
+
+bigScreenContainer.onclick = () => {
+  const confirmClose = confirm("공유를 취소하시겠습니까?");
+  if (!confirmClose) return;
+
+  // 공유 중이라면 중단
+  if (sharingScreen) stopScreenShare();
+
+  // 카메라 공유도 중단
+  bigScreenVideo.srcObject = null;
+};
+
+
+function renderUsers(users, isHost) {
+  videoContainer.innerHTML = "";
+  for (const uid in users) {
+    const user = users[uid];
+    const userBox = document.createElement("div");
+    userBox.className = "userBox";
+    if (user.isHost) userBox.classList.add("host");
+
+    // 이름
+    const nameDiv = document.createElement("div");
+    nameDiv.className = "userName";
+    nameDiv.textContent = user.name + (uid === localUid ? " (나)" : "") + (user.isHost ? " [호스트]" : "");
+    userBox.appendChild(nameDiv);
+
+    // 비디오
+    const videoEl = document.createElement("video");
+    videoEl.autoplay = true;
+    videoEl.muted = (uid === localUid);
+    videoEl.playsInline = true;
+    videoEl.style.background = "#000";
+    videoEl.style.width = "120px";
+    videoEl.style.height = "90px";
+    userBox.appendChild(videoEl);
+
+    // 호스트만 클릭 가능하게 (다른 사용자 비디오 선택)
+    if (isHost && uid !== localUid) {
+      userBox.style.cursor = "pointer";
+userBox.onclick = () => {
+  const confirmReplace = confirm("현재 공유 중인 화면이 있다면 중지됩니다. 진행할까요?");
+  if (!confirmReplace) return;
+
+  stopScreenShare(); // 공유 중이면 종료
+  const stream = getUserVideoStream(uid); // 유저 카메라 스트림
+  if (stream) {
+    bigScreenVideo.srcObject = stream;
+  } else {
+    alert("해당 사용자의 영상이 없습니다.");
+  }
+};
+
+
+    }
+
+    videoContainer.appendChild(userBox);
+  }
+}
+
+
+
+  // 로그인 및 닉네임 입력
+  
+  // 사용자 목록 렌더링 함수
+  function renderUsers(users, isHost) {
+    videoContainer.innerHTML = "";
+    for (const uid in users) {
+      const user = users[uid];
+      const userBox = document.createElement("div");
+      userBox.className = "userBox";
+      if (user.isHost) userBox.classList.add("host");
+
+      // 이름 표시
+      const nameDiv = document.createElement("div");
+      nameDiv.className = "userName";
+      nameDiv.textContent = user.name + (uid === localUid ? " (나)" : "") + (user.isHost ? " [호스트]" : "");
+      userBox.appendChild(nameDiv);
+
+      // TODO: 실제 영상 연결 위치 (WebRTC 필요)
+      const videoEl = document.createElement("video");
+      videoEl.autoplay = true;
+      videoEl.muted = (uid === localUid); // 내 영상은 음소거
+      videoEl.playsInline = true;
+      videoEl.style.background = "#000";
+      videoEl.style.width = "120px";
+      videoEl.style.height = "90px";
+      userBox.appendChild(videoEl);
+
+      // 상태 표시 및 호스트용 관리 버튼
+      const controlsDiv = document.createElement("div");
+      controlsDiv.className = "controls";
+
+      const micStatus = document.createElement("span");
+      micStatus.textContent = user.mic ? "🎤" : "🔇";
+      controlsDiv.appendChild(micStatus);
+
+      const camStatus = document.createElement("span");
+      camStatus.textContent = user.cam ? "📷" : "📴";
+      camStatus.style.marginLeft = "8px";
+      controlsDiv.appendChild(camStatus);
+
+      const screenStatus = document.createElement("span");
+      screenStatus.textContent = user.screenSharing ? "🖥️" : "";
+      screenStatus.style.marginLeft = "8px";
+      controlsDiv.appendChild(screenStatus);
+
+      // 호스트만 다른 사용자 제어 가능 (음소거/강퇴)
+      if (isHost && uid !== localUid) {
+        const muteBtn = document.createElement("button");
+        muteBtn.className = "controlBtn";
+        muteBtn.textContent = "음소거";
+        muteBtn.onclick = () => {
+          db.ref(`rooms/${roomId}/users/${uid}`).update({ mic: false });
+        };
+        controlsDiv.appendChild(muteBtn);
+
+        const kickBtn = document.createElement("button");
+        kickBtn.className = "controlBtn";
+        kickBtn.textContent = "강퇴";
+        kickBtn.onclick = () => {
+          db.ref(`rooms/${roomId}/users/${uid}`).remove();
+          alert(`${user.name}님을 강퇴했습니다.`);
+        };
+        controlsDiv.appendChild(kickBtn);
+      }
+
+      userBox.appendChild(controlsDiv);
+      videoContainer.appendChild(userBox);
+    }
+  }
+  // 채팅 로직
+let ttsMode = false;
+
+document.getElementById("toggleMode").onclick = () => {
+  ttsMode = !ttsMode;
+  document.getElementById("toggleMode").textContent = ttsMode ? "🔊 음성" : "💬 텍스트";
+};
+
+// 👇 채팅 보내기 처리
+document.getElementById("sendMessage").onclick = sendMessage;
+document.getElementById("chatInput").addEventListener("keydown", e => {
+  if (e.key === "Enter") sendMessage();
+});
+
+function sendMessage() {
+  const msg = document.getElementById("chatInput").value.trim();
+  if (!msg) return;
+  const chatRef = db.ref(`rooms/${roomId}/chats`);
+  chatRef.push({
+    sender: userName,
+    message: msg,
+    timestamp: Date.now()
+  });
+  document.getElementById("chatInput").value = "";
+}
+
+// 👇 수신 처리
+db.ref(`rooms/${roomId}/chats`).on("child_added", snapshot => {
+  const { sender, message } = snapshot.val();
+  const msgDiv = document.createElement("div");
+  msgDiv.innerText = `${sender}: ${message}`;
+  const chatMessages = document.getElementById("chatMessages");
+  chatMessages.appendChild(msgDiv);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  if (ttsMode && sender !== userName) {
+    const utter = new SpeechSynthesisUtterance(message);
+    utter.lang = "ko-KR";
+    window.speechSynthesis.speak(utter);
+  }
+});
+
+// 수신 처리
+
+
+  // 로컬 미디어 초기화
+  async function initLocalMedia() {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      micOn = true;
+      camOn = false;
+      updateLocalStream();
+      updateUI();
+    } catch (e) {
+      alert("마이크 권한 필요: " + e.message);
+    }
+  }
+
+  function updateLocalStream() {
+    if (!localStream) return;
+    localStream.getAudioTracks().forEach(t => t.enabled = micOn);
+    localStream.getVideoTracks().forEach(t => t.enabled = camOn);
+    updateUserState();
+  }
+
+  function updateUserState() {
+    if (!localUid) return;
+    db.ref(`rooms/${roomId}/users/${localUid}`).update({
+      mic: micOn,
+      cam: camOn,
+      screenSharing: sharingScreen
+    });
+  }
+
+  function updateUI() {
+    btnMic.textContent = micOn ? "🔇 마이크 끄기" : "🎤 마이크 켜기";
+    btnCam.textContent = camOn ? "📴 카메라 끄기" : "📷 카메라 켜기";
+    btnScreen.textContent = sharingScreen ? "🛑 화면 공유 중지" : "🖥️ 화면 공유";
+  }
+
+  // 버튼 이벤트
+  btnMic.onclick = () => {
+    micOn = !micOn;
+    updateLocalStream();
+    updateUI();
+  };
+
+  btnCam.onclick = async () => {
+    if (sharingScreen) {
+      alert("화면 공유 중에는 카메라를 켤 수 없습니다.");
+      return;
+    }
+    try {
+      if (!camOn) {
+        const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        videoStream.getVideoTracks().forEach(t => {
+          if (!localStream) localStream = new MediaStream();
+          localStream.addTrack(t);
+        });
+        camOn = true;
+      } else {
+        localStream.getVideoTracks().forEach(t => {
+          t.stop();
+          localStream.removeTrack(t);
+        });
+        camOn = false;
+      }
+      updateLocalStream();
+      updateUI();
+    } catch(e) {
+      alert("카메라 권한 필요 또는 오류: " + e.message);
+    }
+  };
+
+  btnScreen.onclick = async () => {
+    if (sharingScreen) {
+      stopScreenShare();
+    } else {
+      startScreenShare();
+    }
+    updateUI();
+  };
+
+async function startScreenShare() {
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    sharingScreen = true;
+
+    bigScreenVideo.srcObject = stream; // ✅ 큰 스크린에 공유 표시
+
+    updateUserState();
+    updateUI();
+
+    stream.getVideoTracks()[0].onended = () => stopScreenShare();
+  } catch (e) {
+    alert("화면 공유 실패: " + e.message);
+    sharingScreen = false;
+    updateUserState();
+    updateUI();
+  }
+}
+
+  function stopScreenShare() {
+    sharingScreen = false;
+    // 화면 공유 트랙 종료 및 제거 (생략)
+
+    updateUserState();
+    updateUI();
+  }
+
+
+
+
+const btnDeleteRoom = document.getElementById("deleteRoomBtn");
+const hostControls = document.getElementById("hostControls");
+
+async function loginAndInit() {
+  try {
+    const userCredential = await firebase.auth().signInAnonymously();
+    localUid = userCredential.user.uid;
+
+    const nickname = prompt("이름을 입력하세요") || "익명";
+    userName = nickname;
+
+    // ✅ 방 종료 여부 확인
+    const closedSnap = await db.ref(`rooms/${roomId}/closed`).get();
+    if (closedSnap.exists()) {
+      alert("이 방은 종료되었습니다.");
+      location.href = "index.html";
+      return;
+    }
+
+    // ✅ 사용자 수 체크
+    const usersSnap = await db.ref(`rooms/${roomId}/users`).get();  // ← 여기에 옮김
+    const users = usersSnap.val() || {};
+    const userCount = Object.keys(users).length;
+    if (userCount >= 5) {
+      alert("최대 인원 5명입니다. 입장할 수 없습니다.");
+      location.href = "index.html";
+      return;
+    }
+
+    // 함수 호출
+
+    // ✅ 호스트이면 방 삭제 버튼 보이게
+    if (isHost) {
+      document.getElementById("hostControls").style.display = "block";
+// 삭제 버튼 클릭 시
+document.getElementById("deleteRoomBtn").onclick = async () => {
+  const confirmDelete = confirm("정말로 방을 종료하시겠습니까?");
+  if (!confirmDelete) return;
+
+  // 모든 사용자에게 종료 알림
+  await db.ref(`rooms/${roomId}/closed`).set(true);
+
+  // 바로 방 데이터 삭제 (setTimeout 제거)
+  await db.ref(`rooms/${roomId}`).remove();
+
+  alert("방이 종료되었습니다. 메인 화면으로 이동합니다.");
+  location.href = "index.html";
+};
+    }
+
+    // ✅ 사용자 등록
+    const userRef = db.ref(`rooms/${roomId}/users/${localUid}`);
+    await userRef.set({
+      name: nickname,
+      mic: false,
+      cam: false,
+      screenSharing: false,
+      isHost: isHost,
+      active: true
+    });
+    userRef.onDisconnect().remove();
+
+    // ✅ 사용자 목록 렌더링
+    db.ref(`rooms/${roomId}/users`).on("value", snapshot => {
+      const users = snapshot.val() || {};
+      renderUsers(users, isHost);
+    });
+
+    // ✅ 방 종료 감지 → 모두 index.html 이동
+    db.ref(`rooms/${roomId}/closed`).on("value", snapshot => {
+      if (snapshot.exists()) {
+        alert("방이 종료되어 메인 화면으로 이동합니다.");
+        location.href = "index.html";
+      }
+    });
+
+    await initLocalMedia();
+  } catch (e) {
+    alert("로그인 실패: " + e.message);
+  }
+}
+
+  loginAndInit();
+
+
+
+</script>
+
+</body>
+</html>
